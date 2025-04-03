@@ -10,7 +10,7 @@ from ultralytics import YOLO
 from collections import Counter
 
 # Load YOLOv8 model (Ensure correct model path)
-MODEL_PATH = r"C:\Users\DELL\Documents\Final fabric\best copy.pt"
+MODEL_PATH = "best copy.pt"
 model = YOLO(MODEL_PATH)
 
 # Initialize session state for tracking defect statistics
