@@ -345,7 +345,7 @@ with tab1:
         if uploaded_image:
             image = np.array(cv2.imdecode(np.frombuffer(uploaded_image.read(), np.uint8), 1))
             processed_image, defects = process_image(image)
-            st.image(processed_image, channels="BGR", use_column_width=True)
+            st.image(processed_image, channels="BGR", use_container_width=True)
             if defects:
                 st.error(f"⚠️ Defects detected: {', '.join(defects)}")
             else:
