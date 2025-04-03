@@ -8,10 +8,17 @@ import seaborn as sns
 import os
 from ultralytics import YOLO
 from collections import Counter
+import streamlit_webrtc
+import av
+from typing import List, NamedTuple
 
 # Load YOLOv8 model (Ensure correct model path)
 MODEL_PATH = "best copy.pt"
-model = YOLO(MODEL_PATH)
+try:
+    model = YOLO(MODEL_PATH)
+except Exception as e:
+    st.error(f"Error loading model: {e}")
+    model = None
 
 # Initialize session state for tracking defect statistics
 if "defect_count" not in st.session_state:
@@ -22,9 +29,15 @@ if "defect_summary" not in st.session_state:
     st.session_state.defect_summary = Counter()
 if "no_defect_count" not in st.session_state:
     st.session_state.no_defect_count = 0
+if "camera_allowed" not in st.session_state:
+    st.session_state.camera_allowed = False
 
 # Function to process images
 def process_image(image):
+    if model is None:
+        st.error("Model not loaded properly")
+        return image, []
+        
     results = model(image)  # Run YOLOv8 on image
     defect_types = []
     for r in results:
@@ -81,24 +94,58 @@ def process_video_stream(video_path):
     st.session_state.no_defect_count += no_defect_count
     st.session_state.defect_summary.update(defect_types)
 
-# Function to capture frames from live camera
-def process_live_camera():
-    cap = cv2.VideoCapture(0)  # Open webcam
-    stframe = st.empty()  # Placeholder for displaying frames
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        results = model(frame)  # Run YOLO on frame
+class VideoProcessor:
+    def __init__(self):
+        self.defect_types = []
+        
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        
+        # Process frame with YOLO
+        results = model(img)
+        frame_defects = []
+        
         for r in results:
-            im_array = r.plot()  # Annotate frame
+            img = r.plot()  # Get annotated image
+            for box in r.boxes:
+                class_id = int(box.cls[0])
+                defect_name = model.names[class_id]
+                frame_defects.append(defect_name)
+                self.defect_types.append(defect_name)
+        
+        # Update session state with each processed frame
+        st.session_state.total_count += 1
+        if frame_defects:
+            st.session_state.defect_count += 1
+            st.session_state.defect_summary.update(frame_defects)
+        else:
+            st.session_state.no_defect_count += 1
+        
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-        # Display live feed with detections
-        stframe.image(im_array, channels="BGR", use_column_width=True)
-
-    cap.release()
+# Function to use WebRTC for live camera access
+def process_live_camera():
+    st.subheader("📸 Live Camera Defect Detection")
+    
+    # Add camera permission info
+    st.info("📱 This feature requires camera access. Please allow permissions when prompted by your browser.")
+    
+    # Create WebRTC streamer
+    webrtc_ctx = streamlit_webrtc.webrtc_streamer(
+        key="fabric-defect-detection",
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+    
+    if webrtc_ctx.state.playing:
+        st.session_state.camera_allowed = True
+        st.success("✅ Camera connected successfully! Detecting fabric defects in real-time.")
+    else:
+        if st.session_state.camera_allowed:
+            st.warning("Camera disconnected.")
+        else:
+            st.warning("Waiting for camera permission...")
 
 # Function to process multiple images
 def process_multiple_images(uploaded_files):
@@ -251,6 +298,16 @@ def display_dashboard():
 # Streamlit UI
 st.title("🔍 Fabric Defect Detection using YOLOv8")
 
+# Add a requirements notice at the top
+st.sidebar.title("📋 Setup Requirements")
+st.sidebar.info("""
+This app uses YOLOv8 for fabric defect detection. 
+Make sure to install the following packages:
+```
+pip install streamlit-webrtc opencv-python-headless ultralytics numpy pandas matplotlib seaborn
+```
+""")
+
 tab1, tab2 = st.tabs(["Detection", "Dashboard"])
 
 with tab1:
@@ -286,6 +343,10 @@ with tab1:
                 process_video_stream(temp_file.name)  # Call function for real-time processing
 
     elif option == "Live Camera":
+        # Display camera permission info
+        camera_info = st.info("⚠️ Camera access requires browser permission. Click 'START' when prompted.")
+        
+        # Call the WebRTC function for browser-compatible camera access
         process_live_camera()
 
 with tab2:
