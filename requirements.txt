@@ -6,3 +6,4 @@ seaborn
 pandas
 ultralytics
 streamlit-webrtc
+watchfiles
