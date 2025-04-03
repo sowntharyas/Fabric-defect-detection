@@ -1,176 +1,142 @@
 import streamlit as st
 import cv2
 import numpy as np
-import torch
+import os
+import time
+import tempfile
 import pandas as pd
 import plotly.express as px
 from ultralytics import YOLO
 
-# Load YOLO model
-MODEL_PATH = r"C:\Users\DELL\Documents\Final fabric\best copy.pt"
-model = YOLO(MODEL_PATH)
+# Load YOLO Model
+model = YOLO("best copy.pt")  # Replace with your trained model path
 
-st.set_page_config(layout="wide", page_title="Fabric Defect Detection")
-st.title("🧵 Fabric Defect Detection Dashboard")
+# Initialize session state for login
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
 
-# Initialize session state for real-time updates
-if "defect_data" not in st.session_state:
-    st.session_state.defect_data = {
-        "total_images": 0,
-        "defect_count": 0,
-        "non_defect_count": 0,
-        "defect_summary": {}
-    }
+# Initialize dashboard data
+if 'defect_counts' not in st.session_state:
+    st.session_state.defect_counts = {}
+    st.session_state.total_images = 0
+    st.session_state.total_defective = 0
+    st.session_state.total_non_defective = 0
 
-st.sidebar.header("Options")
-option = st.sidebar.radio("Choose an option:", ["Single Image", "Multiple Images", "Upload Video", "Live Camera", "Dashboard"])
+# Login Function
+def login():
+    st.session_state.logged_in = True
+
+def logout():
+    st.session_state.logged_in = False
 
 def detect_defects(image):
     results = model(image)
-    output_image = results[0].plot()
+    annotated_image = results[0].plot()  # Get image with annotations
+    defect_counts = {}
+    
+    for result in results:
+        for box in result.boxes:
+            cls = int(box.cls)
+            label = result.names[cls]
+            defect_counts[label] = defect_counts.get(label, 0) + 1
+    
+    return annotated_image, defect_counts
 
-    defect_summary = {}
-    for box in results[0].boxes:
-        cls = int(box.cls[0])
-        defect_name = model.names[cls]
-        defect_summary[defect_name] = defect_summary.get(defect_name, 0) + 1
+def update_dashboard(defect_counts):
+    for defect, count in defect_counts.items():
+        if defect in st.session_state.defect_counts:
+            st.session_state.defect_counts[defect] += count
+        else:
+            st.session_state.defect_counts[defect] = count
+    
+    st.session_state.total_images += 1
+    if defect_counts:
+        st.session_state.total_defective += 1
+    else:
+        st.session_state.total_non_defective += 1
 
-    return output_image, defect_summary
+# Sidebar for Login & Logout
+st.sidebar.title("User Authentication")
+if not st.session_state.logged_in:
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        if username == "admin" and password == "password":  # Replace with a secure method
+            login()
+            st.sidebar.success("Logged in successfully!")
+        else:
+            st.sidebar.error("Invalid credentials")
+else:
+    st.sidebar.button("Logout", on_click=logout)
 
-def update_dashboard(total_images, defect_summary):
-    st.session_state.defect_data["total_images"] += total_images
-    defect_count = sum(defect_summary.values())
-    st.session_state.defect_data["defect_count"] += defect_count
-    st.session_state.defect_data["non_defect_count"] = max(0, st.session_state.defect_data["total_images"] - st.session_state.defect_data["defect_count"])
+# If not logged in, stop execution
+if not st.session_state.logged_in:
+    st.stop()
 
-    for defect, count in defect_summary.items():
-        st.session_state.defect_data["defect_summary"][defect] = st.session_state.defect_data["defect_summary"].get(defect, 0) + count
+# Dashboard Page
+st.title("Fabric Defect Detection Dashboard")
 
-    st.rerun()  # Auto-refresh dashboard
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Images Processed", st.session_state.total_images)
+col2.metric("Defective Images", st.session_state.total_defective)
+col3.metric("Non-Defective Images", st.session_state.total_non_defective)
 
-def process_single_image():
-    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+defect_df = pd.DataFrame(st.session_state.defect_counts.items(), columns=["Defect Name", "Count"])
+if not defect_df.empty:
+    st.subheader("Defect Summary Table")
+    st.dataframe(defect_df)
+    pie_chart = px.pie(defect_df, names="Defect Name", values="Count", title="Defective Percentage")
+    st.plotly_chart(pie_chart)
+    bar_chart = px.bar(defect_df, x="Defect Name", y="Count", title="Defect Count", color="Defect Name")
+    st.plotly_chart(bar_chart)
+
+# File Upload for Images & Videos
+st.sidebar.subheader("Upload Files")
+option = st.sidebar.radio("Select Type", ["Single Image", "Multiple Images", "Video Upload", "Live Camera"])
+
+if option == "Single Image":
+    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
     if uploaded_file:
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, 1)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        output_image, defect_summary = detect_defects(img)
-        
-        st.image(output_image, caption="Processed Image", use_container_width=True)
-        update_dashboard(1, defect_summary)
+        image = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), 1)
+        annotated_image, defects = detect_defects(image)
+        update_dashboard(defects)
+        st.image(annotated_image, caption="Detected Defects", use_container_width=True)
 
-def process_multiple_images():
-    uploaded_files = st.file_uploader("Upload multiple images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+elif option == "Multiple Images":
+    uploaded_files = st.file_uploader("Upload Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
     if uploaded_files:
-        total_defects = {}
         for uploaded_file in uploaded_files:
-            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            img = cv2.imdecode(file_bytes, 1)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            output_image, img_defect_summary = detect_defects(img)
+            image = cv2.imdecode(np.frombuffer(uploaded_file.read(), np.uint8), 1)
+            annotated_image, defects = detect_defects(image)
+            update_dashboard(defects)
+            st.image(annotated_image, caption=f"Detected Defects - {uploaded_file.name}", use_container_width=True)
 
-            for defect, count in img_defect_summary.items():
-                total_defects[defect] = total_defects.get(defect, 0) + count
-
-            st.image(output_image, caption="Processed Image", use_container_width=True)
-
-        update_dashboard(len(uploaded_files), total_defects)
-
-def process_uploaded_video():
-    uploaded_video = st.file_uploader("Upload a video", type=["mp4", "avi", "mov"])
+elif option == "Video Upload":
+    uploaded_video = st.file_uploader("Upload Video", type=["mp4", "avi", "mov"])
     if uploaded_video:
-        st.video(uploaded_video)
-
-        temp_video_path = "temp_video.mp4"
+        temp_video_path = os.path.join(tempfile.gettempdir(), uploaded_video.name)
         with open(temp_video_path, "wb") as f:
             f.write(uploaded_video.read())
-
         cap = cv2.VideoCapture(temp_video_path)
-        total_frames, total_defects = 0, {}
-
-        stframe = st.empty()
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            output_frame, frame_defect_summary = detect_defects(frame_rgb)
-
-            for defect, count in frame_defect_summary.items():
-                total_defects[defect] = total_defects.get(defect, 0) + count
-
-            total_frames += 1
-            stframe.image(output_frame, channels="RGB", use_container_width=True)
-            update_dashboard(1, frame_defect_summary)
-
+            annotated_frame, defects = detect_defects(frame)
+            update_dashboard(defects)
+            st.image(annotated_frame, caption="Detected Defects in Video", use_container_width=True)
         cap.release()
 
-def live_camera_detection():
-    cap = cv2.VideoCapture(0)
-    stframe = st.empty()
-    total_frames, total_defects = 0, {}
-
+elif option == "Live Camera":
+    st.subheader("Live Camera Feed")
+    cap = cv2.VideoCapture(0)  # Use 1 for external camera, or change for mobile IP camera
+    frame_window = st.image([])
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        output_frame, frame_defect_summary = detect_defects(frame_rgb)
-
-        for defect, count in frame_defect_summary.items():
-            total_defects[defect] = total_defects.get(defect, 0) + count
-
-        total_frames += 1
-        stframe.image(output_frame, channels="RGB", use_container_width=True)
-        update_dashboard(1, frame_defect_summary)
-
+        annotated_frame, defects = detect_defects(frame)
+        update_dashboard(defects)
+        frame_window.image(annotated_frame, channels="BGR")
+        time.sleep(0.05)  # Adjust for smooth streaming
     cap.release()
-
-def display_dashboard():
-    st.header("📊 Real-Time Fabric Defect Dashboard")
-    
-    st.metric(label="📷 Total Images Processed", value=st.session_state.defect_data["total_images"])
-    st.metric(label="⚠️ Total Defects Detected", value=st.session_state.defect_data["defect_count"])
-    st.metric(label="✅ Non-Defective Images", value=st.session_state.defect_data["non_defect_count"])
-
-    defect_summary = st.session_state.defect_data["defect_summary"]
-    if not defect_summary:
-        defect_summary = {"No Defects Detected": 0}
-
-    defect_summary_df = pd.DataFrame(
-        list(defect_summary.items()),
-        columns=["🛠️ Defect Type", "🔢 Count"]
-    )
-    st.subheader("Defect Breakdown")
-    st.table(defect_summary_df)
-
-    if st.session_state.defect_data["defect_count"] > 0:
-        pie_chart = px.pie(
-            names=list(st.session_state.defect_data["defect_summary"].keys()),
-            values=list(st.session_state.defect_data["defect_summary"].values()),
-            title="⚖️ Defect Distribution"
-        )
-        st.plotly_chart(pie_chart)
-
-        bar_chart = px.bar(
-            x=list(st.session_state.defect_data["defect_summary"].keys()),
-            y=list(st.session_state.defect_data["defect_summary"].values()),
-            title="📊 Defect Count by Type",
-            labels={"x": "Defect Type", "y": "Count"}
-        )
-        st.plotly_chart(bar_chart)
-    else:
-        st.warning("No defects detected yet. Start processing images or videos!")
-
-if option == "Single Image":
-    process_single_image()
-elif option == "Multiple Images":
-    process_multiple_images()
-elif option == "Upload Video":
-    process_uploaded_video()
-elif option == "Live Camera":
-    live_camera_detection()
-elif option == "Dashboard":
-    display_dashboard()
