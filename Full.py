@@ -16,6 +16,7 @@ from typing import List, NamedTuple
 MODEL_PATH = "best copy.pt"
 try:
     model = YOLO(MODEL_PATH)
+    st.success(f"Model loaded successfully from {MODEL_PATH}")
 except Exception as e:
     st.error(f"Error loading model: {e}")
     model = None
@@ -94,32 +95,53 @@ def process_video_stream(video_path):
     st.session_state.no_defect_count += no_defect_count
     st.session_state.defect_summary.update(defect_types)
 
+# VideoProcessor class for live camera
 class VideoProcessor:
     def __init__(self):
         self.defect_types = []
-        
+
     def recv(self, frame):
+        if model is None:
+            return frame  # Return unprocessed frame if model failed to load
+        
+        # Convert frame to numpy array
         img = frame.to_ndarray(format="bgr24")
         
         # Process frame with YOLO
-        results = model(img)
-        frame_defects = []
+        try:
+            # Optional: Resize for faster processing (uncomment if needed)
+            # img = cv2.resize(img, (320, 320))
+            
+            results = model(img)
+            frame_defects = []
+            
+            for r in results:
+                img = r.plot()  # Annotate image with bounding boxes
+                for box in r.boxes:
+                    class_id = int(box.cls[0])
+                    defect_name = model.names[class_id]
+                    frame_defects.append(defect_name)
+                    self.defect_types.append(defect_name)
+            
+            # Update session state
+            st.session_state.total_count += 1
+            if frame_defects:
+                st.session_state.defect_count += 1
+                st.session_state.defect_summary.update(frame_defects)
+            else:
+                st.session_state.no_defect_count += 1
+            
+            # Add defect labels to the frame for real-time feedback
+            if frame_defects:
+                cv2.putText(img, f"Defects: {', '.join(frame_defects)}", 
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            else:
+                cv2.putText(img, "No Defects", 
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
-        for r in results:
-            img = r.plot()  # Get annotated image
-            for box in r.boxes:
-                class_id = int(box.cls[0])
-                defect_name = model.names[class_id]
-                frame_defects.append(defect_name)
-                self.defect_types.append(defect_name)
-        
-        # Update session state with each processed frame
-        st.session_state.total_count += 1
-        if frame_defects:
-            st.session_state.defect_count += 1
-            st.session_state.defect_summary.update(frame_defects)
-        else:
-            st.session_state.no_defect_count += 1
+        except Exception as e:
+            st.error(f"Error processing frame: {e}")
+            return frame
         
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -127,8 +149,10 @@ class VideoProcessor:
 def process_live_camera():
     st.subheader("📸 Live Camera Defect Detection")
     
-    # Add camera permission info
     st.info("📱 This feature requires camera access. Please allow permissions when prompted by your browser.")
+    
+    # Placeholder for real-time defect summary
+    defect_status = st.empty()
     
     # Create WebRTC streamer
     webrtc_ctx = streamlit_webrtc.webrtc_streamer(
@@ -141,9 +165,17 @@ def process_live_camera():
     if webrtc_ctx.state.playing:
         st.session_state.camera_allowed = True
         st.success("✅ Camera connected successfully! Detecting fabric defects in real-time.")
+        
+        # Display real-time defect summary
+        processor = webrtc_ctx.video_processor
+        if processor and processor.defect_types:
+            defect_status.error(f"⚠️ Defects detected: {', '.join(set(processor.defect_types[-10:]))}")
+        else:
+            defect_status.success("✅ No defects detected yet")
     else:
         if st.session_state.camera_allowed:
             st.warning("Camera disconnected.")
+            defect_status.empty()
         else:
             st.warning("Waiting for camera permission...")
 
@@ -294,18 +326,13 @@ def display_dashboard():
         ax4.text(0, 50, "Perfect Quality!", ha='center', va='center', fontsize=20, rotation=0, color='darkgreen')
         st.pyplot(fig4)
 
-
 # Streamlit UI
 st.title("🔍 Fabric Defect Detection using YOLOv8")
 
-# Add a requirements notice at the top
 st.sidebar.title("📋 Setup Requirements")
 st.sidebar.info("""
 This app uses YOLOv8 for fabric defect detection. 
 Make sure to install the following packages:
-```
-pip install streamlit-webrtc opencv-python-headless ultralytics numpy pandas matplotlib seaborn
-```
 """)
 
 tab1, tab2 = st.tabs(["Detection", "Dashboard"])
@@ -319,7 +346,6 @@ with tab1:
             image = np.array(cv2.imdecode(np.frombuffer(uploaded_image.read(), np.uint8), 1))
             processed_image, defects = process_image(image)
             st.image(processed_image, channels="BGR", use_column_width=True)
-            
             if defects:
                 st.error(f"⚠️ Defects detected: {', '.join(defects)}")
             else:
@@ -328,25 +354,18 @@ with tab1:
     elif option == "Multiple Images":
         st.info("Select multiple images to upload (hold Ctrl/Cmd to select multiple files)")
         uploaded_files = st.file_uploader("Upload Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-        
-        if uploaded_files:
-            # Add a button to start processing
-            if st.button("Process Selected Images"):
-                with st.spinner("Processing multiple images..."):
-                    process_multiple_images(uploaded_files)
+        if uploaded_files and st.button("Process Selected Images"):
+            with st.spinner("Processing multiple images..."):
+                process_multiple_images(uploaded_files)
 
     elif option == "Video":
         uploaded_video = st.file_uploader("Upload a Video", type=["mp4", "avi", "mov"])
         if uploaded_video:
             with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                 temp_file.write(uploaded_video.read())
-                process_video_stream(temp_file.name)  # Call function for real-time processing
+                process_video_stream(temp_file.name)
 
     elif option == "Live Camera":
-        # Display camera permission info
-        camera_info = st.info("⚠️ Camera access requires browser permission. Click 'START' when prompted.")
-        
-        # Call the WebRTC function for browser-compatible camera access
         process_live_camera()
 
 with tab2:
